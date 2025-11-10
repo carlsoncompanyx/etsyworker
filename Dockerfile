@@ -1,8 +1,7 @@
-FROM runpod/pytorch:2.3.0-py3.10-cuda12.1
+FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
 
-ARG UPSCAYL_VERSION=latest
-ENV UPSCAYL_VERSION=${UPSCAYL_VERSION} \
-    UPSCAYL_CLI_URL=https://github.com/upscayl/upscayl/releases/${UPSCAYL_VERSION}/download/Upscayl-CLI-Linux.tar.xz \
+ENV UPSCAYL_VERSION=latest \
+    UPSCAYL_CLI_URL=https://github.com/upscayl/upscayl/releases/latest/download/upscayl-cli-linux.tar.xz \
     OUTPUT_DIR=/app/output
 
 RUN apt-get update && \
@@ -27,11 +26,11 @@ RUN apt-get update && \
         wget && \
     rm -rf /var/lib/apt/lists/*
 
-RUN set -eux; \
-    mkdir -p /opt/upscayl /app/output; \
-    curl -fL "$UPSCAYL_CLI_URL" -o /tmp/upscayl-cli-linux.tar.xz; \
-    tar -xJf /tmp/upscayl-cli-linux.tar.xz --strip-components=1 -C /opt/upscayl; \
-    install -m 755 /opt/upscayl/upscayl-cli /usr/local/bin/upscayl-cli; \
+RUN mkdir -p /opt/upscayl /app/output && \
+    curl -L "$UPSCAYL_CLI_URL" -o /tmp/upscayl-cli-linux.tar.xz && \
+    tar -xJf /tmp/upscayl-cli-linux.tar.xz -C /opt/upscayl && \
+    chmod +x /opt/upscayl/upscayl-cli && \
+    ln -s /opt/upscayl/upscayl-cli /usr/local/bin/upscayl-cli && \
     rm /tmp/upscayl-cli-linux.tar.xz
 
 WORKDIR /app

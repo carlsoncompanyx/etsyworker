@@ -9,12 +9,10 @@ container.
 
 ```bash
 docker build -t image-upscaler .
-# or pin a specific release tag
-docker build -t image-upscaler --build-arg UPSCAYL_VERSION=v3.0.0 .
 ```
 
-The Docker image extends `runpod/pytorch:2.3.0-py3.10-cuda12.1`, downloads the Upscayl CLI
-release archive (defaulting to the `latest` tag), and prepares the Python runtime.
+The Docker image extends `runpod/pytorch:2.3.0-py3.10-cuda12.1`, installs the latest Upscayl
+CLI release, and prepares the Python runtime.
 
 ## Running locally
 

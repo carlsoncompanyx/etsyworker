@@ -9,19 +9,10 @@ container.
 
 ```bash
 docker build -t image-upscaler .
-# Pin a specific release tag when needed
-docker build -t image-upscaler --build-arg UPSCAYL_VERSION=v3.0.0 .
-# Supply a GitHub token if you routinely hit API rate limits
-docker build -t image-upscaler \
-  --build-arg UPSCAYL_VERSION=latest \
-  --build-arg GITHUB_TOKEN="$GITHUB_TOKEN" .
 ```
 
-The Docker image extends `runpod/pytorch:2.3.0-py3.10-cuda12.1`, discovers the correct
-Upscayl CLI release asset for Linux (defaulting to the `latest` tag), and prepares the
-Python runtime. The build script supports `.tar.xz`, `.tar.gz`, and `.zip` release
-archives and will automatically link the bundled `upscayl-cli` binary into the system
-`PATH`.
+The Docker image extends `runpod/pytorch:2.3.0-py3.10-cuda12.1`, installs the latest Upscayl
+CLI release, and prepares the Python runtime.
 
 ## Running locally
 

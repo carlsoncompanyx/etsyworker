@@ -112,9 +112,6 @@ def _initialize_pipeline() -> None:
                 ) from exc
             
             _PIPELINE = pipeline
-            
-            # 2. Move to device AFTER all offloading and slicing are set up
-            _PIPELINE.to(device)
             return
         except Exception as exc:  # pragma: no cover - exercised in runtime environments
             last_error = exc

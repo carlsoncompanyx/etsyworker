@@ -1,0 +1,8 @@
+runpod
+requests
+Pillow
+diffusers
+transformers
+accelerate
+safetensors
+xformers

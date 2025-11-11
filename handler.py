@@ -11,6 +11,9 @@ import torch
 from PIL import Image
 from diffusers import StableDiffusionUpscalePipeline
 
+# Added for explicit memory cleanup
+import gc 
+
 OUTPUT_ROOT = Path(os.environ.get("OUTPUT_DIR", "/app/output"))
 OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -53,6 +56,7 @@ def _download_image(url: str, download_dir: Path) -> Path:
 
 def _resolve_dtype_candidates(device: str) -> List[torch.dtype]:
     candidates: List[torch.dtype] = []
+    # By default, we prioritize bfloat16, then float16, as they save VRAM
     preferred_name = os.environ.get("TORCH_DTYPE", "bfloat16")
     preferred = getattr(torch, preferred_name, None)
     if isinstance(preferred, torch.dtype):
@@ -90,13 +94,23 @@ def _initialize_pipeline() -> None:
             pipeline = StableDiffusionUpscalePipeline.from_pretrained(MODEL_ID, **kwargs)
             pipeline.set_progress_bar_config(disable=True)
             pipeline.to(device)
+
+            # --- VRAM Optimizations ---
             pipeline.enable_attention_slicing()
+            # NEW: Enables VAE decoding in chunks to prevent VAE OOM errors
+            pipeline.enable_vae_slicing() 
+
+            # Uncomment this line only if OOM still occurs after VAE slicing.
+            # It provides maximum VRAM savings at the expense of speed.
+            # pipeline.enable_sequential_cpu_offload()
+
             try:
                 pipeline.enable_xformers_memory_efficient_attention()
             except Exception as exc:
                 raise RuntimeError(
                     "Failed to enable xformers memory efficient attention; ensure xformers is installed"
                 ) from exc
+            
             _PIPELINE = pipeline
             return
         except Exception as exc:  # pragma: no cover - exercised in runtime environments
@@ -118,12 +132,17 @@ def _run_upscale(prompt: str, image_path: Path, output_path: Path) -> Path:
     assert _PIPELINE is not None  # for type checkers
 
     low_res_image = _load_image(image_path)
+    
+    # NEW: Aggressively clear VRAM before the main inference call
+    gc.collect()
+    torch.cuda.empty_cache()
 
     with torch.inference_mode():
         result = _PIPELINE(prompt=prompt, image=low_res_image)
     upscaled = result.images[0]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Using quality=100 for maximum retention, as requested
     upscaled.save(output_path, format="WEBP", quality=100)
     return output_path
 

@@ -11,10 +11,12 @@ prompt, and produces 4× `.webp` outputs rendered with high-quality settings.
 docker build -t image-upscaler .
 ```
 
-The Docker image extends `runpod/pytorch:2.3.0-py3.10-cuda12.1`, installs the runtime
+The Docker image defaults to `runpod/pytorch:2.1.0-py3.10-cuda11.8`, installs the runtime
 dependencies for Diffusers, and prepares a cache directory at `/app/.cache/huggingface`
-for downloaded model weights. Provide a `HUGGINGFACE_TOKEN` build or runtime environment
-variable if you need to access gated models or avoid anonymous rate limits.
+for downloaded model weights. If your environment requires a different base image, pass
+`--build-arg BASE_IMAGE=<image:tag>` to the `docker build` command. Provide a
+`HUGGINGFACE_TOKEN` build or runtime environment variable if you need to access gated
+models or avoid anonymous rate limits.
 
 ## Running locally
 

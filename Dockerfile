@@ -1,4 +1,5 @@
-FROM runpod/pytorch:2.3.0-py3.10-cuda12.1
+ARG BASE_IMAGE=runpod/pytorch:2.1.0-py3.10-cuda11.8
+FROM ${BASE_IMAGE}
 
 ENV OUTPUT_DIR=/app/output \
     HUGGINGFACE_HUB_CACHE=/app/.cache/huggingface

@@ -1,7 +1,10 @@
-runpod
+torch>=2.3.0
+torchvision>=0.18.0
+diffusers>=0.30.0
+transformers>=4.43.0
+huggingface-hub>=0.23.0
+accelerate>=0.31.0
+safetensors>=0.4.3
+xformers>=0.0.27
 requests
 Pillow
-diffusers
-transformers
-accelerate
-safetensors

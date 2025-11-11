@@ -9,10 +9,11 @@ RUN mkdir -p "$OUTPUT_DIR" "$HUGGINGFACE_HUB_CACHE"
 WORKDIR /app
 
 COPY requirements.txt ./
-# Install dependencies from requirements.txt, upgrade pip, and install xformers for performance
+
+# Clean install of dependencies
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir xformers
+    pip check
 
 COPY . .
 

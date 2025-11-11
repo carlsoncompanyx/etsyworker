@@ -91,18 +91,18 @@ def _initialize_pipeline() -> None:
         if token:
             kwargs["use_auth_token"] = token
         try:
+            # 1. Initialize pipeline with best available dtype (bfloat16/float16 first)
             pipeline = StableDiffusionUpscalePipeline.from_pretrained(MODEL_ID, **kwargs)
             pipeline.set_progress_bar_config(disable=True)
-            pipeline.to(device)
+            # pipeline.to(device) # <-- MUST be called later
 
             # --- VRAM Optimizations ---
             pipeline.enable_attention_slicing()
-            # NEW: Enables VAE decoding in chunks to prevent VAE OOM errors
             pipeline.enable_vae_slicing() 
 
-            # Uncomment this line only if OOM still occurs after VAE slicing.
-            # It provides maximum VRAM savings at the expense of speed.
-            # pipeline.enable_sequential_cpu_offload()
+            # FIX for OOM: Enables Sequential CPU Offload. 
+            # This is the guaranteed way to fit the model using large system RAM.
+            pipeline.enable_sequential_cpu_offload()
 
             try:
                 pipeline.enable_xformers_memory_efficient_attention()
@@ -112,9 +112,13 @@ def _initialize_pipeline() -> None:
                 ) from exc
             
             _PIPELINE = pipeline
+            
+            # 2. Move to device AFTER all offloading and slicing are set up
+            _PIPELINE.to(device)
             return
         except Exception as exc:  # pragma: no cover - exercised in runtime environments
             last_error = exc
+            print(f"Failed to load pipeline with dtype {dtype}: {exc}")
             continue
 
     raise RuntimeError("Failed to initialize diffusion pipeline") from last_error
@@ -133,7 +137,7 @@ def _run_upscale(prompt: str, image_path: Path, output_path: Path) -> Path:
 
     low_res_image = _load_image(image_path)
     
-    # NEW: Aggressively clear VRAM before the main inference call
+    # Aggressively clear VRAM before the main inference call
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -142,7 +146,7 @@ def _run_upscale(prompt: str, image_path: Path, output_path: Path) -> Path:
     upscaled = result.images[0]
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    # Using quality=100 for maximum retention, as requested
+    # Using quality=100 for maximum retention
     upscaled.save(output_path, format="WEBP", quality=100)
     return output_path
 

@@ -35,9 +35,8 @@ RUN apt-get update && \
     update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# 🛠️ CRITICAL FIX: Explicitly set a stable DNS server (Google 8.8.8.8)
-# This resolves the "No such device or address" error for github.com.
-RUN echo "nameserver 8.8.8.8" > /etc/resolv.conf
+# The CRITICAL FIX line has been removed from here!
+# DNS will be configured via the docker build --dns flag.
 
 # ---------- Build Upscayl CLI from source (Should now succeed) ----------
 RUN git clone https://github.com/upscayl/upscayl-cli.git /opt/upscayl && \

@@ -1,0 +1,7 @@
+runpod
+requests
+Pillow
+realesrgan
+basicsr
+facexlib
+numpy

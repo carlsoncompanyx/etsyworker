@@ -1,9 +1,9 @@
-numpy>=1.26.0
-runpod
+numpy==1.26.4
+torch>=2.8.0
 requests
 Pillow
 realesrgan
 basicsr
 facexlib
-facexlib>=0.3.0
-opencv-python-headless>=4.9.0
+opencv-python-headless
+runpod

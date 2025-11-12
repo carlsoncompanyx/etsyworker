@@ -1,0 +1,33 @@
+Ignore temporary directories and hidden files
+
+.git
+.gitignore
+.DS_Store
+pycache
+*.pyc
+
+Ignore virtual environments
+
+venv/
+.venv/
+env/
+
+Ignore local development artifacts and test files
+
+tests/
+logs/
+data/
+outputs/
+app/outputs/
+.ipynb_checkpoints
+
+Ignore massive dependencies if they are only used for training
+
+and not for inference in the final image.
+
+If you are only deploying the final model, these files aren't needed.
+
+*.onnx
+*.safetensors
+*.ckpt
+*.pt

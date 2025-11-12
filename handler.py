@@ -139,7 +139,7 @@ def _run_upscale(image_path: Path, output_path: Path) -> Path:
     return output_path
 
 
-def handler(event: Dict[str, Any]) -> Dict[str, Any]:
+def realesrgan_handler(event: Dict[str, Any]) -> Dict[str, Any]:
     input_payload = event.get("input") or {}
     image_urls = input_payload.get("image_urls")
     if not image_urls or not isinstance(image_urls, list):

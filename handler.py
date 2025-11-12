@@ -13,6 +13,8 @@ from PIL import Image
 from basicsr.archs.rrdbnet_arch import RRDBNet
 from realesrgan import RealESRGANer
 
+torch.backends.cuda.matmul.allow_tf32 = True
+
 OUTPUT_ROOT = Path(os.environ.get("OUTPUT_DIR", "/app/output"))
 OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 

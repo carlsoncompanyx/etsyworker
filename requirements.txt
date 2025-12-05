@@ -1,15 +1,25 @@
-runpod==1.5.1
-torch==2.1.0
-diffusers==0.25.0
-transformers==4.36.0
-accelerate==0.25.0
-safetensors==0.4.1
-Pillow==10.1.0
-requests==2.31.0
+# Core Dependencies
+runpod==1.6.2
+torch>=2.1.0
+torchvision>=0.16.0
 
-# Real-ESRGAN dependencies
-basicsr==1.4.2
-facexlib==0.3.0
-gfpgan==1.3.8
-realesrgan==0.3.0
-opencv-python==4.8.1.78
+# Diffusers and Transformers
+diffusers>=0.25.0
+transformers>=4.36.0
+accelerate>=0.25.0
+
+# Image Processing
+Pillow>=10.0.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# Real-ESRGAN
+basicsr>=1.4.2
+facexlib>=0.3.0
+gfpgan>=1.3.8
+realesrgan>=0.3.0
+
+# Utilities
+safetensors>=0.4.0
+omegaconf>=2.3.0
+einops>=0.7.0

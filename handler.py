@@ -8,7 +8,7 @@ Supports three process modes:
 - upscale: Upscale user-supplied images to target resolution
 
 Author: Your Name
-Version: 1.0.0
+Version: 1.1.0
 """
 
 import runpod
@@ -48,28 +48,61 @@ aesthetic_model = CLIPModel.from_pretrained(AESTHETIC_MODEL_ID).to("cuda")
 aesthetic_processor = CLIPProcessor.from_pretrained(AESTHETIC_MODEL_ID)
 print("✅ LAION aesthetic model loaded")
 
-# Real-ESRGAN Upscaler
-print("📦 Loading Real-ESRGAN 4x model...")
+# Real-ESRGAN Upscalers (multiple models for different content types)
+print("📦 Loading Real-ESRGAN models...")
 try:
     from realesrgan import RealESRGANer
     from basicsr.archs.rrdbnet_arch import RRDBNet
     
-    # Real-ESRGAN x4plus model
-    model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
-    upsampler = RealESRGANer(
+    # Global upsampler dictionary
+    upsamplers = {}
+    
+    # Model 1: RealESRGAN_x4plus (best for photorealistic images)
+    print("   Loading x4plus (photorealistic)...")
+    model_photo = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+    upsamplers['photo'] = RealESRGANer(
         scale=4,
-        model_path="https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
-        model=model,
-        tile=512,  # Tile size for memory efficiency
+        model_path="/app/models/RealESRGAN_x4plus.pth",
+        model=model_photo,
+        tile=512,
         tile_pad=10,
         pre_pad=0,
-        half=True,  # fp16
+        half=True,
         gpu_id=0
     )
-    print("✅ Real-ESRGAN loaded")
+    
+    # Model 2: RealESRGAN_x4plus_anime_6B (best for artwork, paintings, watercolors)
+    print("   Loading x4plus_anime (artwork/watercolor)...")
+    model_art = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=6, num_grow_ch=32, scale=4)
+    upsamplers['art'] = RealESRGANer(
+        scale=4,
+        model_path="/app/models/RealESRGAN_x4plus_anime_6B.pth",
+        model=model_art,
+        tile=512,
+        tile_pad=10,
+        pre_pad=0,
+        half=True,
+        gpu_id=0
+    )
+    
+    # Model 3: RealESRNet_x4plus (conservative, less artifacts)
+    print("   Loading x4plus_esrnet (conservative)...")
+    model_conservative = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+    upsamplers['conservative'] = RealESRGANer(
+        scale=4,
+        model_path="/app/models/RealESRNet_x4plus.pth",
+        model=model_conservative,
+        tile=512,
+        tile_pad=10,
+        pre_pad=0,
+        half=True,
+        gpu_id=0
+    )
+    
+    print("✅ All Real-ESRGAN models loaded")
 except Exception as e:
     print(f"⚠️ Real-ESRGAN failed to load: {e}")
-    upsampler = None
+    upsamplers = {}
 
 print("🎉 All models loaded successfully\n")
 
@@ -109,7 +142,11 @@ def score_image_aesthetic(image: Image.Image) -> float:
         return 0.0
 
 
-def upscale_image_realesrgan(image: Image.Image, target_resolution: Optional[Tuple[int, int]] = None) -> Image.Image:
+def upscale_image_realesrgan(
+    image: Image.Image, 
+    target_resolution: Optional[Tuple[int, int]] = None,
+    model_type: str = "art"
+) -> Image.Image:
     """
     Upscale image using Real-ESRGAN.
     
@@ -117,12 +154,23 @@ def upscale_image_realesrgan(image: Image.Image, target_resolution: Optional[Tup
         image: Input PIL Image
         target_resolution: Optional (width, height) tuple. If provided, performs multiple 
                           4x upscale passes until target is met or exceeded.
+        model_type: Which upscaler to use:
+                   - "photo": RealESRGAN_x4plus (best for photorealistic images)
+                   - "art": RealESRGAN_x4plus_anime_6B (best for artwork, watercolors, paintings)
+                   - "conservative": RealESRNet_x4plus (less aggressive, fewer artifacts)
     
     Returns:
         Upscaled PIL Image
     """
-    if upsampler is None:
-        raise RuntimeError("Real-ESRGAN upsampler not initialized")
+    if not upsamplers:
+        raise RuntimeError("Real-ESRGAN upsamplers not initialized")
+    
+    if model_type not in upsamplers:
+        print(f"⚠️ Model type '{model_type}' not found, defaulting to 'art'")
+        model_type = "art"
+    
+    upsampler = upsamplers[model_type]
+    print(f"🎨 Using upscaler: {model_type}")
     
     current_img = image
     pass_count = 0
@@ -258,6 +306,7 @@ def process_recreate(job_input: Dict[str, Any]) -> Dict[str, Any]:
     steps = job_input.get("steps", 50)
     guidance_scale = job_input.get("guidance_scale", 7.5)
     final_resolution = job_input.get("final_resolution", None)
+    upscale_model = job_input.get("upscale_model", "art")  # NEW: Allow model selection
     
     if not prompts:
         raise ValueError("prompts list is required for recreate process")
@@ -303,7 +352,11 @@ def process_recreate(job_input: Dict[str, Any]) -> Dict[str, Any]:
             
             # Upscale
             print(f"   🔼 Upscaling {image_id}...")
-            upscaled = upscale_image_realesrgan(pil_image, target_resolution=final_resolution)
+            upscaled = upscale_image_realesrgan(
+                pil_image, 
+                target_resolution=final_resolution,
+                model_type=upscale_model
+            )
             
             upscaled_images.append({
                 "id": f"{image_id}_up",
@@ -330,6 +383,7 @@ def process_upscale(job_input: Dict[str, Any]) -> Dict[str, Any]:
     
     images_b64 = job_input.get("images_b64", [])
     final_resolution = job_input.get("final_resolution", None)
+    upscale_model = job_input.get("upscale_model", "art")  # NEW: Allow model selection
     
     if not images_b64:
         raise ValueError("images_b64 list is required for upscale process")
@@ -345,7 +399,11 @@ def process_upscale(job_input: Dict[str, Any]) -> Dict[str, Any]:
         print(f"   Input size: {pil_image.width}x{pil_image.height}")
         
         # Upscale
-        upscaled = upscale_image_realesrgan(pil_image, target_resolution=final_resolution)
+        upscaled = upscale_image_realesrgan(
+            pil_image, 
+            target_resolution=final_resolution,
+            model_type=upscale_model
+        )
         
         upscaled_images.append({
             "id": f"{image_id}_up",

@@ -53,55 +53,65 @@ print("📦 Loading Real-ESRGAN models...")
 try:
     from realesrgan import RealESRGANer
     from basicsr.archs.rrdbnet_arch import RRDBNet
+    import os
+    import urllib.request
     
     # Global upsampler dictionary
     upsamplers = {}
     
-    # Model 1: RealESRGAN_x4plus (best for photorealistic images)
-    print("   Loading x4plus (photorealistic)...")
-    model_photo = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
-    upsamplers['photo'] = RealESRGANer(
-        scale=4,
-        model_path="/app/models/RealESRGAN_x4plus.pth",
-        model=model_photo,
-        tile=512,
-        tile_pad=10,
-        pre_pad=0,
-        half=True,
-        gpu_id=0
-    )
+    # Model definitions with download URLs
+    models_config = {
+        'photo': {
+            'url': 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth',
+            'path': '/app/models/RealESRGAN_x4plus.pth',
+            'arch': {'num_in_ch': 3, 'num_out_ch': 3, 'num_feat': 64, 'num_block': 23, 'num_grow_ch': 32, 'scale': 4}
+        },
+        'art': {
+            'url': 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.3/RealESRGAN_x4plus_anime_6B.pth',
+            'path': '/app/models/RealESRGAN_x4plus_anime_6B.pth',
+            'arch': {'num_in_ch': 3, 'num_out_ch': 3, 'num_feat': 64, 'num_block': 6, 'num_grow_ch': 32, 'scale': 4}
+        },
+        'conservative': {
+            'url': 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.1/RealESRNet_x4plus.pth',
+            'path': '/app/models/RealESRNet_x4plus.pth',
+            'arch': {'num_in_ch': 3, 'num_out_ch': 3, 'num_feat': 64, 'num_block': 23, 'num_grow_ch': 32, 'scale': 4}
+        }
+    }
     
-    # Model 2: RealESRGAN_x4plus_anime_6B (best for artwork, paintings, watercolors)
-    print("   Loading x4plus_anime (artwork/watercolor)...")
-    model_art = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=6, num_grow_ch=32, scale=4)
-    upsamplers['art'] = RealESRGANer(
-        scale=4,
-        model_path="/app/models/RealESRGAN_x4plus_anime_6B.pth",
-        model=model_art,
-        tile=512,
-        tile_pad=10,
-        pre_pad=0,
-        half=True,
-        gpu_id=0
-    )
+    # Download and load each model
+    for model_name, config in models_config.items():
+        print(f"   Loading {model_name} upscaler...")
+        
+        # Download model if it doesn't exist
+        if not os.path.exists(config['path']):
+            print(f"   Downloading {model_name} model from {config['url']}...")
+            try:
+                urllib.request.urlretrieve(config['url'], config['path'])
+                print(f"   ✅ Downloaded {model_name} model")
+            except Exception as e:
+                print(f"   ⚠️ Failed to download {model_name} model: {e}")
+                continue
+        
+        # Load the model
+        try:
+            model = RRDBNet(**config['arch'])
+            upsamplers[model_name] = RealESRGANer(
+                scale=4,
+                model_path=config['path'],
+                model=model,
+                tile=512,
+                tile_pad=10,
+                pre_pad=0,
+                half=True,
+                gpu_id=0
+            )
+            print(f"   ✅ {model_name} upscaler ready")
+        except Exception as e:
+            print(f"   ⚠️ Failed to load {model_name} upscaler: {e}")
     
-    # Model 3: RealESRNet_x4plus (conservative, less artifacts)
-    print("   Loading x4plus_esrnet (conservative)...")
-    model_conservative = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
-    upsamplers['conservative'] = RealESRGANer(
-        scale=4,
-        model_path="/app/models/RealESRNet_x4plus.pth",
-        model=model_conservative,
-        tile=512,
-        tile_pad=10,
-        pre_pad=0,
-        half=True,
-        gpu_id=0
-    )
-    
-    print("✅ All Real-ESRGAN models loaded")
+    print(f"✅ {len(upsamplers)}/{len(models_config)} Real-ESRGAN models loaded")
 except Exception as e:
-    print(f"⚠️ Real-ESRGAN failed to load: {e}")
+    print(f"⚠️ Real-ESRGAN failed to initialize: {e}")
     upsamplers = {}
 
 print("🎉 All models loaded successfully\n")

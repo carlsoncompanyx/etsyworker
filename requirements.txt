@@ -1,5 +1,10 @@
 # Core Dependencies
 runpod==1.6.2
+
+# IMPORTANT: Pin NumPy to 1.x for compatibility with PyTorch and other libraries
+numpy<2.0.0,>=1.24.0
+
+# PyTorch (will use version from base image)
 torch>=2.1.0
 torchvision>=0.16.0
 
@@ -10,8 +15,7 @@ accelerate>=0.25.0
 
 # Image Processing
 Pillow>=10.0.0
-opencv-python>=4.8.0
-numpy>=1.24.0
+opencv-python-headless>=4.8.0
 
 # Real-ESRGAN
 basicsr>=1.4.2

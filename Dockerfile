@@ -17,6 +17,9 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements file
 COPY requirements.txt .
 
+# Downgrade NumPy first to avoid compatibility issues
+RUN pip install --no-cache-dir "numpy<2.0.0,>=1.24.0"
+
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 

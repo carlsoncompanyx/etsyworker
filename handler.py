@@ -1,29 +1,24 @@
 """
 RunPod Serverless Handler - Unified Endpoint with /create and /production routes
-Replicates both ComfyUI workflows in a single endpoint
+Uses Playground v2.5 with proper EDM schedulers and aesthetic-predictor-v2-5
 """
 
 import runpod
 import torch
-from diffusers import DiffusionPipeline, EulerDiscreteScheduler
+from diffusers import DiffusionPipeline, EDMDPMSolverMultistepScheduler, EDMEulerScheduler
 from PIL import Image
 import io
 import base64
-import numpy as np
-from transformers import CLIPModel, CLIPProcessor
-from realesrgan import RealESRGANer
-from basicsr.archs.rrdbnet_arch import RRDBNet
-import math
+from transformers import AutoModel, AutoProcessor
 
 # Global variables for model persistence
 pipe = None
 aesthetic_model = None
 aesthetic_processor = None
-upscaler = None
 
 def load_models():
     """Load all models once during cold start"""
-    global pipe, aesthetic_model, aesthetic_processor, upscaler
+    global pipe, aesthetic_model, aesthetic_processor
     
     if pipe is None:
         print("Loading Playground v2.5 model...")
@@ -31,111 +26,76 @@ def load_models():
             "playgroundai/playground-v2.5-1024px-aesthetic",
             torch_dtype=torch.float16,
             variant="fp16"
-        )
-        pipe = pipe.to("cuda")
+        ).to("cuda")
         
-        # Configure scheduler to match ComfyUI settings
-        pipe.scheduler = EulerDiscreteScheduler.from_config(
-            pipe.scheduler.config,
-            timestep_spacing="trailing"
-        )
+        # Use DPM++ 2M Karras scheduler (EDM formulation) as recommended
+        pipe.scheduler = EDMDPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
         
-        print("Playground model loaded successfully")
+        print("✓ Playground v2.5 loaded with EDMDPMSolverMultistepScheduler")
     
     if aesthetic_model is None:
-        print("Loading aesthetic predictor...")
-        aesthetic_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
-        aesthetic_processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
-        aesthetic_model = aesthetic_model.to("cuda")
-        print("Aesthetic model loaded successfully")
-    
-    if upscaler is None:
-        print("Loading Real-ESRGAN 4x upscaler...")
-        model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
-        upscaler = RealESRGANer(
-            scale=4,
-            model_path='https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth',
-            model=model,
-            tile=512,
-            tile_pad=10,
-            pre_pad=0,
-            half=True,
-            device='cuda'
+        print("Loading aesthetic predictor v2.5 (SigLIP-based)...")
+        aesthetic_model = AutoModel.from_pretrained(
+            "discus0434/aesthetic-predictor-v2-5",
+            trust_remote_code=True
+        ).to("cuda")
+        aesthetic_processor = AutoProcessor.from_pretrained(
+            "discus0434/aesthetic-predictor-v2-5",
+            trust_remote_code=True
         )
-        print("Upscaler loaded successfully")
+        print("✓ Aesthetic predictor v2.5 loaded")
 
 def calculate_aesthetic_score(image):
-    """Calculate aesthetic score for the generated image"""
+    """Calculate aesthetic score using the v2.5 predictor"""
     global aesthetic_model, aesthetic_processor
     
     inputs = aesthetic_processor(images=image, return_tensors="pt").to("cuda")
     
     with torch.no_grad():
-        image_features = aesthetic_model.get_image_features(**inputs)
-        score = torch.norm(image_features).item() / 100.0
-        score = min(max(score, 0.0), 10.0)
+        outputs = aesthetic_model(**inputs)
+        # The model returns a score directly
+        score = outputs.logits.item()
     
     return round(score, 2)
 
-def tile_upscale(image, tile_size=1024, overlap=64):
-    """Perform tiled upscaling for large images (UltimateSDUpscale logic)"""
-    global upscaler
-    
-    img_array = np.array(image)
-    h, w = img_array.shape[:2]
-    
-    # Calculate output dimensions
-    out_h, out_w = h * 4, w * 4
-    output = np.zeros((out_h, out_w, 3), dtype=np.uint8)
-    
-    # Calculate tiles
-    tiles_x = math.ceil(w / (tile_size - overlap))
-    tiles_y = math.ceil(h / (tile_size - overlap))
-    
-    print(f"Tiled upscaling: {tiles_x}x{tiles_y} tiles")
-    
-    for ty in range(tiles_y):
-        for tx in range(tiles_x):
-            x1 = tx * (tile_size - overlap)
-            y1 = ty * (tile_size - overlap)
-            x2 = min(x1 + tile_size, w)
-            y2 = min(y1 + tile_size, h)
-            
-            tile = img_array[y1:y2, x1:x2]
-            upscaled_tile, _ = upscaler.enhance(tile, outscale=4)
-            
-            out_x1, out_y1 = x1 * 4, y1 * 4
-            out_x2, out_y2 = x2 * 4, y2 * 4
-            
-            output[out_y1:out_y2, out_x1:out_x2] = upscaled_tile
-    
-    return Image.fromarray(output)
-
 def route_create(job_input):
     """
-    /create route - Flow A: Fast image generation with aesthetic scoring
+    /create route - Fast image generation with aesthetic scoring
+    Uses DPM++ 2M Karras (guidance_scale=3.0 recommended)
     
     Expected input:
     {
         "route": "create",
         "prompt": "your positive prompt",
         "negative_prompt": "your negative prompt (optional)",
-        "width": 1152,
-        "height": 768,
+        "width": 1024,
+        "height": 1024,
         "seed": -1,
-        "steps": 25,
-        "cfg_scale": 7.0,
+        "steps": 50,
+        "guidance_scale": 3.0,
+        "scheduler": "dpm",  # "dpm" or "euler"
         "filename": "custom_filename (optional)"
     }
     """
     prompt = job_input.get("prompt", "")
     negative_prompt = job_input.get("negative_prompt", "")
-    width = job_input.get("width", 1152)
-    height = job_input.get("height", 768)
+    width = job_input.get("width", 1024)
+    height = job_input.get("height", 1024)
     seed = job_input.get("seed", -1)
-    steps = job_input.get("steps", 25)
-    cfg_scale = job_input.get("cfg_scale", 7.0)
+    steps = job_input.get("steps", 50)
+    guidance_scale = job_input.get("guidance_scale", 3.0)
+    scheduler_type = job_input.get("scheduler", "dpm")
     filename = job_input.get("filename", prompt[:50])
+    
+    # Set scheduler based on request
+    if scheduler_type == "euler":
+        pipe.scheduler = EDMEulerScheduler.from_config(pipe.scheduler.config)
+        if guidance_scale == 3.0:  # If using default, adjust for Euler
+            guidance_scale = 5.0
+        print(f"[CREATE] Using EDMEulerScheduler with guidance_scale={guidance_scale}")
+    else:
+        pipe.scheduler = EDMDPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+        print(f"[CREATE] Using EDMDPMSolverMultistepScheduler with guidance_scale={guidance_scale}")
     
     # Handle random seed
     if seed == -1:
@@ -143,7 +103,7 @@ def route_create(job_input):
     
     generator = torch.Generator(device="cuda").manual_seed(seed)
     
-    print(f"[CREATE] Generating: {width}x{height}, seed={seed}, steps={steps}, cfg={cfg_scale}")
+    print(f"[CREATE] Generating: {width}x{height}, seed={seed}, steps={steps}")
     
     # Generate image
     image = pipe(
@@ -152,7 +112,7 @@ def route_create(job_input):
         width=width,
         height=height,
         num_inference_steps=steps,
-        guidance_scale=cfg_scale,
+        guidance_scale=guidance_scale,
         generator=generator
     ).images[0]
     
@@ -176,7 +136,8 @@ def route_create(job_input):
             "height": height,
             "seed": seed,
             "steps": steps,
-            "cfg_scale": cfg_scale,
+            "guidance_scale": guidance_scale,
+            "scheduler": scheduler_type,
             "filename": filename,
             "model": "playground-v2.5-1024px-aesthetic"
         }
@@ -184,7 +145,8 @@ def route_create(job_input):
 
 def route_production(job_input):
     """
-    /production route - Flow B: High-quality generation with 4x upscaling
+    /production route - High-quality generation (upscaling disabled for now)
+    Uses higher steps and can use either scheduler
     
     Expected input:
     {
@@ -192,25 +154,31 @@ def route_production(job_input):
         "prompt": "your positive prompt",
         "negative_prompt": "your negative prompt (optional)",
         "width": 1024,
-        "height": 680,
+        "height": 1024,
         "seed": 0,
-        "steps": 50,
-        "cfg_scale": 7.0,
-        "upscale_factor": 4.0,
-        "use_tiled_upscale": true,
-        "tile_size": 1024
+        "steps": 75,
+        "guidance_scale": 3.0,
+        "scheduler": "dpm"
     }
     """
     prompt = job_input.get("prompt", "")
     negative_prompt = job_input.get("negative_prompt", "")
     width = job_input.get("width", 1024)
-    height = job_input.get("height", 680)
+    height = job_input.get("height", 1024)
     seed = job_input.get("seed", 0)
-    steps = job_input.get("steps", 50)
-    cfg_scale = job_input.get("cfg_scale", 7.0)
-    upscale_factor = job_input.get("upscale_factor", 4.0)
-    use_tiled = job_input.get("use_tiled_upscale", True)
-    tile_size = job_input.get("tile_size", 1024)
+    steps = job_input.get("steps", 75)
+    guidance_scale = job_input.get("guidance_scale", 3.0)
+    scheduler_type = job_input.get("scheduler", "dpm")
+    
+    # Set scheduler based on request
+    if scheduler_type == "euler":
+        pipe.scheduler = EDMEulerScheduler.from_config(pipe.scheduler.config)
+        if guidance_scale == 3.0:
+            guidance_scale = 5.0
+        print(f"[PRODUCTION] Using EDMEulerScheduler with guidance_scale={guidance_scale}")
+    else:
+        pipe.scheduler = EDMDPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+        print(f"[PRODUCTION] Using EDMDPMSolverMultistepScheduler with guidance_scale={guidance_scale}")
     
     # Handle random seed
     if seed == -1:
@@ -218,58 +186,45 @@ def route_production(job_input):
     
     generator = torch.Generator(device="cuda").manual_seed(seed)
     
-    print(f"[PRODUCTION] Generating: {width}x{height}, seed={seed}, steps={steps}, cfg={cfg_scale}")
+    print(f"[PRODUCTION] Generating: {width}x{height}, seed={seed}, steps={steps}")
     
-    # Generate base image
+    # Generate high-quality image
     image = pipe(
         prompt=prompt,
         negative_prompt=negative_prompt,
         width=width,
         height=height,
         num_inference_steps=steps,
-        guidance_scale=cfg_scale,
+        guidance_scale=guidance_scale,
         generator=generator
     ).images[0]
     
-    print("[PRODUCTION] Base image generated, starting upscaling...")
+    # Calculate aesthetic score
+    aesthetic_score = calculate_aesthetic_score(image)
+    print(f"[PRODUCTION] Aesthetic score: {aesthetic_score}")
     
-    # First pass: 4x upscaling with Real-ESRGAN
-    img_array = np.array(image)
-    upscaled_img, _ = upscaler.enhance(img_array, outscale=upscale_factor)
-    upscaled_image = Image.fromarray(upscaled_img)
-    
-    print(f"[PRODUCTION] First pass complete: {upscaled_image.size}")
-    
-    # Optional tiled upscaling for refinement
-    if use_tiled:
-        print("[PRODUCTION] Applying tiled upscaling refinement...")
-        final_image = tile_upscale(upscaled_image, tile_size=tile_size)
-    else:
-        final_image = upscaled_image
-    
-    print(f"[PRODUCTION] Final size: {final_image.size}")
+    # Note: Upscaling disabled for now, can be added later
     
     # Convert to base64
     buffered = io.BytesIO()
-    final_image.save(buffered, format="JPEG", quality=95)
+    image.save(buffered, format="JPEG", quality=95)
     img_base64 = base64.b64encode(buffered.getvalue()).decode()
     
     return {
         "route": "production",
         "image": img_base64,
+        "aesthetic_score": aesthetic_score,
         "metadata": {
             "prompt": prompt,
             "negative_prompt": negative_prompt,
-            "base_width": width,
-            "base_height": height,
-            "final_width": final_image.size[0],
-            "final_height": final_image.size[1],
+            "width": width,
+            "height": height,
             "seed": seed,
             "steps": steps,
-            "cfg_scale": cfg_scale,
-            "upscale_factor": upscale_factor,
+            "guidance_scale": guidance_scale,
+            "scheduler": scheduler_type,
             "model": "playground-v2.5-1024px-aesthetic",
-            "upscaler": "Real-ESRGAN 4x"
+            "note": "Upscaling disabled, will be added in future update"
         }
     }
 

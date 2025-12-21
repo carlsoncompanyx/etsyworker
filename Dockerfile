@@ -22,8 +22,12 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy handler script
+# Copy handler script and test
 COPY handler.py .
+COPY test_imports.py .
+
+# Test that all imports work
+RUN python test_imports.py
 
 # Note: Models will be downloaded on first run and cached to /runpod-volume
 # This is faster and more reliable than downloading during Docker build

@@ -5,11 +5,42 @@ Uses Playground v2.5 with proper EDM schedulers and aesthetic-predictor-v2-5
 
 import runpod
 import torch
-from diffusers import DiffusionPipeline, EDMDPMSolverMultistepScheduler, EDMEulerScheduler
-from PIL import Image
-import io
-import base64
-from transformers import AutoModel, AutoProcessor
+import sys
+import traceback
+
+print("=" * 60)
+print("Starting handler initialization...")
+print("=" * 60)
+sys.stdout.flush()
+
+try:
+    from diffusers import DiffusionPipeline, EDMDPMSolverMultistepScheduler, EDMEulerScheduler
+    print("✓ Diffusers imported successfully")
+except Exception as e:
+    print(f"✗ Failed to import diffusers: {e}")
+    traceback.print_exc()
+    sys.exit(1)
+
+try:
+    from PIL import Image
+    import io
+    import base64
+    print("✓ PIL and utilities imported successfully")
+except Exception as e:
+    print(f"✗ Failed to import PIL/utilities: {e}")
+    traceback.print_exc()
+    sys.exit(1)
+
+try:
+    from transformers import AutoModel, AutoProcessor
+    print("✓ Transformers imported successfully")
+except Exception as e:
+    print(f"✗ Failed to import transformers: {e}")
+    traceback.print_exc()
+    sys.exit(1)
+
+print("All imports successful!")
+sys.stdout.flush()
 
 # Global variables for model persistence
 pipe = None
@@ -20,30 +51,54 @@ def load_models():
     """Load all models once during cold start"""
     global pipe, aesthetic_model, aesthetic_processor
     
-    if pipe is None:
-        print("Loading Playground v2.5 model...")
-        pipe = DiffusionPipeline.from_pretrained(
-            "playgroundai/playground-v2.5-1024px-aesthetic",
-            torch_dtype=torch.float16,
-            variant="fp16"
-        ).to("cuda")
+    try:
+        if pipe is None:
+            print("\n" + "=" * 60)
+            print("Loading Playground v2.5 model...")
+            print("This will take 2-3 minutes on first run...")
+            print("=" * 60)
+            sys.stdout.flush()
+            
+            pipe = DiffusionPipeline.from_pretrained(
+                "playgroundai/playground-v2.5-1024px-aesthetic",
+                torch_dtype=torch.float16,
+                variant="fp16"
+            ).to("cuda")
+            
+            # Use DPM++ 2M Karras scheduler (EDM formulation) as recommended
+            pipe.scheduler = EDMDPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+            
+            print("✓ Playground v2.5 loaded with EDMDPMSolverMultistepScheduler")
+            sys.stdout.flush()
         
-        # Use DPM++ 2M Karras scheduler (EDM formulation) as recommended
-        pipe.scheduler = EDMDPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+        if aesthetic_model is None:
+            print("\n" + "=" * 60)
+            print("Loading aesthetic predictor v2.5 (SigLIP-based)...")
+            print("=" * 60)
+            sys.stdout.flush()
+            
+            aesthetic_model = AutoModel.from_pretrained(
+                "discus0434/aesthetic-predictor-v2-5",
+                trust_remote_code=True
+            ).to("cuda")
+            aesthetic_processor = AutoProcessor.from_pretrained(
+                "discus0434/aesthetic-predictor-v2-5",
+                trust_remote_code=True
+            )
+            print("✓ Aesthetic predictor v2.5 loaded")
+            sys.stdout.flush()
+            
+        print("\n" + "=" * 60)
+        print("All models loaded successfully!")
+        print("Handler is ready to accept requests")
+        print("=" * 60)
+        sys.stdout.flush()
         
-        print("✓ Playground v2.5 loaded with EDMDPMSolverMultistepScheduler")
-    
-    if aesthetic_model is None:
-        print("Loading aesthetic predictor v2.5 (SigLIP-based)...")
-        aesthetic_model = AutoModel.from_pretrained(
-            "discus0434/aesthetic-predictor-v2-5",
-            trust_remote_code=True
-        ).to("cuda")
-        aesthetic_processor = AutoProcessor.from_pretrained(
-            "discus0434/aesthetic-predictor-v2-5",
-            trust_remote_code=True
-        )
-        print("✓ Aesthetic predictor v2.5 loaded")
+    except Exception as e:
+        print(f"\n✗ ERROR loading models: {e}")
+        traceback.print_exc()
+        sys.stdout.flush()
+        raise
 
 def calculate_aesthetic_score(image):
     """Calculate aesthetic score using the v2.5 predictor"""
@@ -235,10 +290,21 @@ def handler(job):
     Input must include a "route" field with value "create" or "production"
     """
     try:
+        # Health check endpoint
+        if job.get("input") == "health":
+            return {
+                "status": "healthy",
+                "models_loaded": pipe is not None and aesthetic_model is not None,
+                "gpu_available": torch.cuda.is_available(),
+                "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A"
+            }
+        
         job_input = job["input"]
         route = job_input.get("route", "").lower()
         
         # Load models on first request
+        print(f"\nReceived request for route: {route}")
+        sys.stdout.flush()
         load_models()
         
         if route == "create":
@@ -252,11 +318,30 @@ def handler(job):
             }
             
     except Exception as e:
-        import traceback
+        error_msg = f"Error in handler: {str(e)}"
+        print(f"\n✗ {error_msg}")
+        traceback.print_exc()
+        sys.stdout.flush()
         return {
-            "error": str(e),
+            "error": error_msg,
             "traceback": traceback.format_exc()
         }
 
 if __name__ == "__main__":
-    runpod.serverless.start({"handler": handler})
+    print("\n" + "=" * 60)
+    print("Starting RunPod serverless handler...")
+    print("=" * 60)
+    sys.stdout.flush()
+    
+    try:
+        # Test that we can import everything before starting
+        print("Handler script loaded successfully")
+        print("Waiting for requests...")
+        sys.stdout.flush()
+        
+        runpod.serverless.start({"handler": handler})
+    except Exception as e:
+        print(f"\n✗ FATAL ERROR starting handler: {e}")
+        traceback.print_exc()
+        sys.stdout.flush()
+        sys.exit(1)

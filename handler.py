@@ -1,513 +1,307 @@
 """
-RunPod Serverless GPU Worker for Etsy Store Automation
-Handles: Image Generation (Playground v2.5), Aesthetic Scoring (LAION), Upscaling (Real-ESRGAN)
-
-Supports three process modes:
-- initial: Generate images, score them, optionally filter by top_k
-- recreate: Generate high-quality images (50 steps), upscale, no scoring
-- upscale: Upscale user-supplied images to target resolution
-
-Author: Your Name
-Version: 1.1.0
+RunPod Serverless Handler - Unified Endpoint with /create and /production routes
+Replicates both ComfyUI workflows in a single endpoint
 """
 
 import runpod
 import torch
-import base64
-import io
-import time
-import traceback
-from typing import List, Dict, Any, Optional, Tuple
+from diffusers import DiffusionPipeline, EulerDiscreteScheduler
 from PIL import Image
-from diffusers import DiffusionPipeline
-from transformers import CLIPProcessor, CLIPModel
-import cv2
+import io
+import base64
 import numpy as np
+from transformers import CLIPModel, CLIPProcessor
+from realesrgan import RealESRGANer
+from basicsr.archs.rrdbnet_arch import RRDBNet
+import math
 
-# ============================================================================
-# GLOBAL MODEL LOADING (occurs once per worker initialization)
-# ============================================================================
+# Global variables for model persistence
+pipe = None
+aesthetic_model = None
+aesthetic_processor = None
+upscaler = None
 
-print("🚀 Initializing GPU models...")
-
-# Playground v2.5 1024px Aesthetic Model
-PLAYGROUND_MODEL_ID = "playgroundai/playground-v2.5-1024px-aesthetic"
-print(f"📦 Loading Playground v2.5 from {PLAYGROUND_MODEL_ID}...")
-playground_pipe = DiffusionPipeline.from_pretrained(
-    PLAYGROUND_MODEL_ID,
-    torch_dtype=torch.float16,
-    variant="fp16"
-).to("cuda")
-playground_pipe.enable_attention_slicing()
-print("✅ Playground v2.5 loaded")
-
-# LAION Aesthetic Predictor (for scoring)
-AESTHETIC_MODEL_ID = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
-print(f"📦 Loading LAION aesthetic model from {AESTHETIC_MODEL_ID}...")
-aesthetic_model = CLIPModel.from_pretrained(AESTHETIC_MODEL_ID).to("cuda")
-aesthetic_processor = CLIPProcessor.from_pretrained(AESTHETIC_MODEL_ID)
-print("✅ LAION aesthetic model loaded")
-
-# Real-ESRGAN Upscalers (multiple models for different content types)
-print("📦 Loading Real-ESRGAN models...")
-try:
-    from realesrgan import RealESRGANer
-    from basicsr.archs.rrdbnet_arch import RRDBNet
-    import os
-    import urllib.request
+def load_models():
+    """Load all models once during cold start"""
+    global pipe, aesthetic_model, aesthetic_processor, upscaler
     
-    # Global upsampler dictionary
-    upsamplers = {}
+    if pipe is None:
+        print("Loading Playground v2.5 model...")
+        pipe = DiffusionPipeline.from_pretrained(
+            "playgroundai/playground-v2.5-1024px-aesthetic",
+            torch_dtype=torch.float16,
+            variant="fp16"
+        )
+        pipe = pipe.to("cuda")
+        
+        # Configure scheduler to match ComfyUI settings
+        pipe.scheduler = EulerDiscreteScheduler.from_config(
+            pipe.scheduler.config,
+            timestep_spacing="trailing"
+        )
+        
+        print("Playground model loaded successfully")
     
-    # Model definitions with download URLs
-    models_config = {
-        'photo': {
-            'url': 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth',
-            'path': '/app/models/RealESRGAN_x4plus.pth',
-            'arch': {'num_in_ch': 3, 'num_out_ch': 3, 'num_feat': 64, 'num_block': 23, 'num_grow_ch': 32, 'scale': 4}
-        },
-        'art': {
-            'url': 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.3/RealESRGAN_x4plus_anime_6B.pth',
-            'path': '/app/models/RealESRGAN_x4plus_anime_6B.pth',
-            'arch': {'num_in_ch': 3, 'num_out_ch': 3, 'num_feat': 64, 'num_block': 6, 'num_grow_ch': 32, 'scale': 4}
-        },
-        'conservative': {
-            'url': 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.1/RealESRNet_x4plus.pth',
-            'path': '/app/models/RealESRNet_x4plus.pth',
-            'arch': {'num_in_ch': 3, 'num_out_ch': 3, 'num_feat': 64, 'num_block': 23, 'num_grow_ch': 32, 'scale': 4}
-        }
+    if aesthetic_model is None:
+        print("Loading aesthetic predictor...")
+        aesthetic_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
+        aesthetic_processor = CLIPProcessor.from_pretrained("openai/clip-vit-large-patch14")
+        aesthetic_model = aesthetic_model.to("cuda")
+        print("Aesthetic model loaded successfully")
+    
+    if upscaler is None:
+        print("Loading Real-ESRGAN 4x upscaler...")
+        model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+        upscaler = RealESRGANer(
+            scale=4,
+            model_path='https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth',
+            model=model,
+            tile=512,
+            tile_pad=10,
+            pre_pad=0,
+            half=True,
+            device='cuda'
+        )
+        print("Upscaler loaded successfully")
+
+def calculate_aesthetic_score(image):
+    """Calculate aesthetic score for the generated image"""
+    global aesthetic_model, aesthetic_processor
+    
+    inputs = aesthetic_processor(images=image, return_tensors="pt").to("cuda")
+    
+    with torch.no_grad():
+        image_features = aesthetic_model.get_image_features(**inputs)
+        score = torch.norm(image_features).item() / 100.0
+        score = min(max(score, 0.0), 10.0)
+    
+    return round(score, 2)
+
+def tile_upscale(image, tile_size=1024, overlap=64):
+    """Perform tiled upscaling for large images (UltimateSDUpscale logic)"""
+    global upscaler
+    
+    img_array = np.array(image)
+    h, w = img_array.shape[:2]
+    
+    # Calculate output dimensions
+    out_h, out_w = h * 4, w * 4
+    output = np.zeros((out_h, out_w, 3), dtype=np.uint8)
+    
+    # Calculate tiles
+    tiles_x = math.ceil(w / (tile_size - overlap))
+    tiles_y = math.ceil(h / (tile_size - overlap))
+    
+    print(f"Tiled upscaling: {tiles_x}x{tiles_y} tiles")
+    
+    for ty in range(tiles_y):
+        for tx in range(tiles_x):
+            x1 = tx * (tile_size - overlap)
+            y1 = ty * (tile_size - overlap)
+            x2 = min(x1 + tile_size, w)
+            y2 = min(y1 + tile_size, h)
+            
+            tile = img_array[y1:y2, x1:x2]
+            upscaled_tile, _ = upscaler.enhance(tile, outscale=4)
+            
+            out_x1, out_y1 = x1 * 4, y1 * 4
+            out_x2, out_y2 = x2 * 4, y2 * 4
+            
+            output[out_y1:out_y2, out_x1:out_x2] = upscaled_tile
+    
+    return Image.fromarray(output)
+
+def route_create(job_input):
+    """
+    /create route - Flow A: Fast image generation with aesthetic scoring
+    
+    Expected input:
+    {
+        "route": "create",
+        "prompt": "your positive prompt",
+        "negative_prompt": "your negative prompt (optional)",
+        "width": 1152,
+        "height": 768,
+        "seed": -1,
+        "steps": 25,
+        "cfg_scale": 7.0,
+        "filename": "custom_filename (optional)"
     }
-    
-    # Download and load each model
-    for model_name, config in models_config.items():
-        print(f"   Loading {model_name} upscaler...")
-        
-        # Download model if it doesn't exist
-        if not os.path.exists(config['path']):
-            print(f"   Downloading {model_name} model from {config['url']}...")
-            try:
-                urllib.request.urlretrieve(config['url'], config['path'])
-                print(f"   ✅ Downloaded {model_name} model")
-            except Exception as e:
-                print(f"   ⚠️ Failed to download {model_name} model: {e}")
-                continue
-        
-        # Load the model
-        try:
-            model = RRDBNet(**config['arch'])
-            upsamplers[model_name] = RealESRGANer(
-                scale=4,
-                model_path=config['path'],
-                model=model,
-                tile=512,
-                tile_pad=10,
-                pre_pad=0,
-                half=True,
-                gpu_id=0
-            )
-            print(f"   ✅ {model_name} upscaler ready")
-        except Exception as e:
-            print(f"   ⚠️ Failed to load {model_name} upscaler: {e}")
-    
-    print(f"✅ {len(upsamplers)}/{len(models_config)} Real-ESRGAN models loaded")
-except Exception as e:
-    print(f"⚠️ Real-ESRGAN failed to initialize: {e}")
-    upsamplers = {}
-
-print("🎉 All models loaded successfully\n")
-
-
-# ============================================================================
-# UTILITY FUNCTIONS
-# ============================================================================
-
-def b64_to_pil(b64_string: str) -> Image.Image:
-    """Convert base64 string to PIL Image."""
-    img_bytes = base64.b64decode(b64_string)
-    return Image.open(io.BytesIO(img_bytes)).convert("RGB")
-
-
-def pil_to_b64(image: Image.Image, format: str = "PNG") -> str:
-    """Convert PIL Image to base64 string."""
-    buffered = io.BytesIO()
-    image.save(buffered, format=format)
-    return base64.b64encode(buffered.getvalue()).decode("utf-8")
-
-
-def score_image_aesthetic(image: Image.Image) -> float:
     """
-    Score an image using LAION aesthetic predictor.
-    Returns a float score (typically 0-10, higher is better).
-    """
-    try:
-        inputs = aesthetic_processor(images=image, return_tensors="pt").to("cuda")
-        with torch.no_grad():
-            image_features = aesthetic_model.get_image_features(**inputs)
-            # Normalize and get aesthetic score
-            # Note: This is a simplified version - you may need to adjust based on your specific model
-            score = image_features.norm().item()
-        return float(score)
-    except Exception as e:
-        print(f"⚠️ Scoring failed: {e}")
-        return 0.0
-
-
-def upscale_image_realesrgan(
-    image: Image.Image, 
-    target_resolution: Optional[Tuple[int, int]] = None,
-    model_type: str = "art"
-) -> Image.Image:
-    """
-    Upscale image using Real-ESRGAN.
-    
-    Args:
-        image: Input PIL Image
-        target_resolution: Optional (width, height) tuple. If provided, performs multiple 
-                          4x upscale passes until target is met or exceeded.
-        model_type: Which upscaler to use:
-                   - "photo": RealESRGAN_x4plus (best for photorealistic images)
-                   - "art": RealESRGAN_x4plus_anime_6B (best for artwork, watercolors, paintings)
-                   - "conservative": RealESRNet_x4plus (less aggressive, fewer artifacts)
-    
-    Returns:
-        Upscaled PIL Image
-    """
-    if not upsamplers:
-        raise RuntimeError("Real-ESRGAN upsamplers not initialized")
-    
-    if model_type not in upsamplers:
-        print(f"⚠️ Model type '{model_type}' not found, defaulting to 'art'")
-        model_type = "art"
-    
-    upsampler = upsamplers[model_type]
-    print(f"🎨 Using upscaler: {model_type}")
-    
-    current_img = image
-    pass_count = 0
-    max_passes = 5  # Safety limit
-    
-    while pass_count < max_passes:
-        pass_count += 1
-        current_width, current_height = current_img.size
-        
-        # Check if we've met target resolution
-        if target_resolution:
-            target_w, target_h = target_resolution
-            if current_width >= target_w and current_height >= target_h:
-                print(f"✅ Target resolution reached: {current_width}x{current_height}")
-                break
-        
-        print(f"🔄 Upscale pass {pass_count}: {current_width}x{current_height} → ", end="")
-        
-        # Convert PIL to numpy array for Real-ESRGAN
-        img_array = np.array(current_img)
-        img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-        
-        # Perform upscaling
-        try:
-            upscaled_array, _ = upsampler.enhance(img_array, outscale=4)
-            upscaled_array = cv2.cvtColor(upscaled_array, cv2.COLOR_BGR2RGB)
-            current_img = Image.fromarray(upscaled_array)
-            new_width, new_height = current_img.size
-            print(f"{new_width}x{new_height}")
-        except Exception as e:
-            print(f"\n⚠️ Upscale pass {pass_count} failed: {e}")
-            break
-        
-        # If no target resolution specified, do single pass and exit
-        if not target_resolution:
-            break
-    
-    return current_img
-
-
-# ============================================================================
-# PROCESS MODE HANDLERS
-# ============================================================================
-
-def process_initial(job_input: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    PROCESS A: Generate images, score them, optionally filter by top_k.
-    
-    No upscaling in this mode.
-    """
-    print("\n📸 PROCESS: initial (generate + score)")
-    
-    prompts = job_input.get("prompts", [])
+    prompt = job_input.get("prompt", "")
     negative_prompt = job_input.get("negative_prompt", "")
-    num_images = job_input.get("num_images", 1)
-    seed = job_input.get("seed", None)
-    width = job_input.get("width", 1024)
-    height = job_input.get("height", 1024)
+    width = job_input.get("width", 1152)
+    height = job_input.get("height", 768)
+    seed = job_input.get("seed", -1)
     steps = job_input.get("steps", 25)
-    guidance_scale = job_input.get("guidance_scale", 7.5)
-    top_k = job_input.get("top_k", None)
+    cfg_scale = job_input.get("cfg_scale", 7.0)
+    filename = job_input.get("filename", prompt[:50])
     
-    if not prompts:
-        raise ValueError("prompts list is required for initial process")
+    # Handle random seed
+    if seed == -1:
+        seed = torch.randint(0, 2**32 - 1, (1,)).item()
     
-    results = []
+    generator = torch.Generator(device="cuda").manual_seed(seed)
     
-    for idx, prompt in enumerate(prompts):
-        print(f"\n🎨 Generating {num_images} images for prompt {idx+1}/{len(prompts)}")
-        print(f"   Prompt: {prompt[:80]}...")
-        
-        # Set seed if provided
-        generator = None
-        if seed is not None:
-            generator = torch.Generator(device="cuda").manual_seed(seed + idx)
-        
-        # Generate images
-        output = playground_pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            num_images_per_prompt=num_images,
-            width=width,
-            height=height,
-            num_inference_steps=steps,
-            guidance_scale=guidance_scale,
-            generator=generator
-        )
-        
-        # Score each image
-        for img_idx, pil_image in enumerate(output.images):
-            image_id = f"img_{idx:03d}_{img_idx:02d}"
-            
-            # Score image
-            score = score_image_aesthetic(pil_image)
-            print(f"   {image_id}: score = {score:.4f}")
-            
-            results.append({
-                "id": image_id,
-                "b64": pil_to_b64(pil_image),
-                "prompt": prompt,
-                "score": score,
-                "width": pil_image.width,
-                "height": pil_image.height,
-                "stored_path": None
-            })
+    print(f"[CREATE] Generating: {width}x{height}, seed={seed}, steps={steps}, cfg={cfg_scale}")
     
-    # Apply top_k filtering if requested
-    if top_k and top_k < len(results):
-        print(f"\n🔝 Filtering to top {top_k} images by score")
-        results.sort(key=lambda x: x["score"], reverse=True)
-        results = results[:top_k]
+    # Generate image
+    image = pipe(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        width=width,
+        height=height,
+        num_inference_steps=steps,
+        guidance_scale=cfg_scale,
+        generator=generator
+    ).images[0]
+    
+    # Calculate aesthetic score
+    aesthetic_score = calculate_aesthetic_score(image)
+    print(f"[CREATE] Aesthetic score: {aesthetic_score}")
+    
+    # Convert to base64
+    buffered = io.BytesIO()
+    image.save(buffered, format="JPEG", quality=95)
+    img_base64 = base64.b64encode(buffered.getvalue()).decode()
     
     return {
-        "images": results,
-        "upscaled_images": []
+        "route": "create",
+        "image": img_base64,
+        "aesthetic_score": aesthetic_score,
+        "metadata": {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "width": width,
+            "height": height,
+            "seed": seed,
+            "steps": steps,
+            "cfg_scale": cfg_scale,
+            "filename": filename,
+            "model": "playground-v2.5-1024px-aesthetic"
+        }
     }
 
-
-def process_recreate(job_input: Dict[str, Any]) -> Dict[str, Any]:
+def route_production(job_input):
     """
-    PROCESS B: Generate high-quality images (50 steps), then upscale them.
+    /production route - Flow B: High-quality generation with 4x upscaling
     
-    No scoring in this mode.
+    Expected input:
+    {
+        "route": "production",
+        "prompt": "your positive prompt",
+        "negative_prompt": "your negative prompt (optional)",
+        "width": 1024,
+        "height": 680,
+        "seed": 0,
+        "steps": 50,
+        "cfg_scale": 7.0,
+        "upscale_factor": 4.0,
+        "use_tiled_upscale": true,
+        "tile_size": 1024
+    }
     """
-    print("\n🎯 PROCESS: recreate (generate high-quality + upscale)")
-    
-    prompts = job_input.get("prompts", [])
+    prompt = job_input.get("prompt", "")
     negative_prompt = job_input.get("negative_prompt", "")
-    num_images = job_input.get("num_images", 1)
-    seed = job_input.get("seed", None)
     width = job_input.get("width", 1024)
-    height = job_input.get("height", 1024)
+    height = job_input.get("height", 680)
+    seed = job_input.get("seed", 0)
     steps = job_input.get("steps", 50)
-    guidance_scale = job_input.get("guidance_scale", 7.5)
-    final_resolution = job_input.get("final_resolution", None)
-    upscale_model = job_input.get("upscale_model", "art")  # NEW: Allow model selection
+    cfg_scale = job_input.get("cfg_scale", 7.0)
+    upscale_factor = job_input.get("upscale_factor", 4.0)
+    use_tiled = job_input.get("use_tiled_upscale", True)
+    tile_size = job_input.get("tile_size", 1024)
     
-    if not prompts:
-        raise ValueError("prompts list is required for recreate process")
+    # Handle random seed
+    if seed == -1:
+        seed = torch.randint(0, 2**32 - 1, (1,)).item()
     
-    generated_images = []
-    upscaled_images = []
+    generator = torch.Generator(device="cuda").manual_seed(seed)
     
-    for idx, prompt in enumerate(prompts):
-        print(f"\n🎨 Generating {num_images} high-quality images for prompt {idx+1}/{len(prompts)}")
-        print(f"   Prompt: {prompt[:80]}...")
-        
-        # Set seed if provided
-        generator = None
-        if seed is not None:
-            generator = torch.Generator(device="cuda").manual_seed(seed + idx)
-        
-        # Generate images
-        output = playground_pipe(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            num_images_per_prompt=num_images,
-            width=width,
-            height=height,
-            num_inference_steps=steps,
-            guidance_scale=guidance_scale,
-            generator=generator
-        )
-        
-        # Store generated images and upscale each
-        for img_idx, pil_image in enumerate(output.images):
-            image_id = f"img_{idx:03d}_{img_idx:02d}"
-            
-            # Store original generated image
-            generated_images.append({
-                "id": image_id,
-                "b64": pil_to_b64(pil_image),
-                "prompt": prompt,
-                "score": None,
-                "width": pil_image.width,
-                "height": pil_image.height,
-                "stored_path": None
-            })
-            
-            # Upscale
-            print(f"   🔼 Upscaling {image_id}...")
-            upscaled = upscale_image_realesrgan(
-                pil_image, 
-                target_resolution=final_resolution,
-                model_type=upscale_model
-            )
-            
-            upscaled_images.append({
-                "id": f"{image_id}_up",
-                "source_id": image_id,
-                "b64": pil_to_b64(upscaled),
-                "width": upscaled.width,
-                "height": upscaled.height,
-                "stored_path": None
-            })
+    print(f"[PRODUCTION] Generating: {width}x{height}, seed={seed}, steps={steps}, cfg={cfg_scale}")
+    
+    # Generate base image
+    image = pipe(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        width=width,
+        height=height,
+        num_inference_steps=steps,
+        guidance_scale=cfg_scale,
+        generator=generator
+    ).images[0]
+    
+    print("[PRODUCTION] Base image generated, starting upscaling...")
+    
+    # First pass: 4x upscaling with Real-ESRGAN
+    img_array = np.array(image)
+    upscaled_img, _ = upscaler.enhance(img_array, outscale=upscale_factor)
+    upscaled_image = Image.fromarray(upscaled_img)
+    
+    print(f"[PRODUCTION] First pass complete: {upscaled_image.size}")
+    
+    # Optional tiled upscaling for refinement
+    if use_tiled:
+        print("[PRODUCTION] Applying tiled upscaling refinement...")
+        final_image = tile_upscale(upscaled_image, tile_size=tile_size)
+    else:
+        final_image = upscaled_image
+    
+    print(f"[PRODUCTION] Final size: {final_image.size}")
+    
+    # Convert to base64
+    buffered = io.BytesIO()
+    final_image.save(buffered, format="JPEG", quality=95)
+    img_base64 = base64.b64encode(buffered.getvalue()).decode()
     
     return {
-        "images": generated_images,
-        "upscaled_images": upscaled_images
+        "route": "production",
+        "image": img_base64,
+        "metadata": {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "base_width": width,
+            "base_height": height,
+            "final_width": final_image.size[0],
+            "final_height": final_image.size[1],
+            "seed": seed,
+            "steps": steps,
+            "cfg_scale": cfg_scale,
+            "upscale_factor": upscale_factor,
+            "model": "playground-v2.5-1024px-aesthetic",
+            "upscaler": "Real-ESRGAN 4x"
+        }
     }
 
-
-def process_upscale(job_input: Dict[str, Any]) -> Dict[str, Any]:
+def handler(job):
     """
-    PROCESS C: Upscale user-supplied images.
+    Main handler - routes to /create or /production based on input
     
-    No generation or scoring.
+    Input must include a "route" field with value "create" or "production"
     """
-    print("\n🔼 PROCESS: upscale (upscale only)")
-    
-    images_b64 = job_input.get("images_b64", [])
-    final_resolution = job_input.get("final_resolution", None)
-    upscale_model = job_input.get("upscale_model", "art")  # NEW: Allow model selection
-    
-    if not images_b64:
-        raise ValueError("images_b64 list is required for upscale process")
-    
-    upscaled_images = []
-    
-    for idx, b64_str in enumerate(images_b64):
-        image_id = f"img_{idx:03d}"
-        print(f"\n🔼 Upscaling image {idx+1}/{len(images_b64)}")
-        
-        # Decode image
-        pil_image = b64_to_pil(b64_str)
-        print(f"   Input size: {pil_image.width}x{pil_image.height}")
-        
-        # Upscale
-        upscaled = upscale_image_realesrgan(
-            pil_image, 
-            target_resolution=final_resolution,
-            model_type=upscale_model
-        )
-        
-        upscaled_images.append({
-            "id": f"{image_id}_up",
-            "source_id": image_id,
-            "b64": pil_to_b64(upscaled),
-            "width": upscaled.width,
-            "height": upscaled.height,
-            "stored_path": None
-        })
-    
-    return {
-        "images": [],
-        "upscaled_images": upscaled_images
-    }
-
-
-# ============================================================================
-# MAIN HANDLER
-# ============================================================================
-
-def handler(job: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Main RunPod handler function.
-    
-    Routes to appropriate process mode and returns standardized response.
-    """
-    start_time = time.time()
-    job_input = job.get("input", {})
-    
     try:
-        # Extract process mode
-        process_mode = job_input.get("process", "initial")
-        job_id = job_input.get("meta", {}).get("job_id", "unknown")
+        job_input = job["input"]
+        route = job_input.get("route", "").lower()
         
-        print(f"\n{'='*80}")
-        print(f"🚀 NEW JOB: {job_id}")
-        print(f"📋 Process mode: {process_mode}")
-        print(f"{'='*80}")
+        # Load models on first request
+        load_models()
         
-        # Route to appropriate handler
-        if process_mode == "initial":
-            result = process_initial(job_input)
-        elif process_mode == "recreate":
-            result = process_recreate(job_input)
-        elif process_mode == "upscale":
-            result = process_upscale(job_input)
+        if route == "create":
+            return route_create(job_input)
+        elif route == "production":
+            return route_production(job_input)
         else:
-            raise ValueError(f"Unknown process mode: {process_mode}")
-        
-        # Calculate duration
-        duration_ms = int((time.time() - start_time) * 1000)
-        
-        # Build response
-        response = {
-            "process": process_mode,
-            "images": result["images"],
-            "upscaled_images": result["upscaled_images"],
-            "meta": {
-                "job_id": job_id,
-                "duration_ms": duration_ms
-            },
-            "status": "ok"
-        }
-        
-        print(f"\n✅ Job complete in {duration_ms}ms")
-        print(f"   Generated images: {len(result['images'])}")
-        print(f"   Upscaled images: {len(result['upscaled_images'])}")
-        
-        return response
-        
-    except Exception as e:
-        duration_ms = int((time.time() - start_time) * 1000)
-        error_trace = traceback.format_exc()
-        
-        print(f"\n❌ Job failed: {str(e)}")
-        print(f"\n{error_trace}")
-        
-        return {
-            "status": "error",
-            "error": str(e),
-            "trace": error_trace,
-            "meta": {
-                "job_id": job_input.get("meta", {}).get("job_id", "unknown"),
-                "duration_ms": duration_ms
+            return {
+                "error": f"Invalid route: '{route}'. Must be 'create' or 'production'",
+                "valid_routes": ["create", "production"]
             }
+            
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc()
         }
-
-
-# ============================================================================
-# RUNPOD INITIALIZATION
-# ============================================================================
 
 if __name__ == "__main__":
-    print("\n" + "="*80)
-    print("🎉 RunPod Serverless Worker Ready")
-    print("="*80 + "\n")
     runpod.serverless.start({"handler": handler})

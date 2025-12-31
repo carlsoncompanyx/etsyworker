@@ -1,0 +1,12 @@
+**/__pycache__/
+**/*.pyc
+.git/
+*.md
+*.log
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.mp4
+*.mov
+node_modules/

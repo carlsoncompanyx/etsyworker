@@ -1,12 +1,10 @@
-# file: requirements.txt
 runpod==1.6.2
 torch==2.1.0
 torchvision==0.16.0
 diffusers>=0.27.0
 transformers>=4.38.0
-huggingface-hub>=0.20.3
 accelerate>=0.27.0
 safetensors>=0.4.2
+huggingface-hub>=0.20.3
 Pillow>=10.2.0
 numpy==1.24.3
-requests>=2.31.0

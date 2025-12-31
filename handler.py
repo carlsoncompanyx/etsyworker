@@ -1,20 +1,4 @@
-# handler.py
-"""
-RunPod Serverless - Unified endpoint
-
-Contract:
-- route=create: requires prompt, negative_prompt, width, height
-  - steps fixed = 25
-  - cfg fixed = 7.0
-  - seed randomized and returned in metadata
-  - returns aesthetic_score
-
-- route=production: requires prompt, negative_prompt, width, height, seed
-  - steps fixed = 50
-  - cfg fixed = 7.0
-  - NO aesthetic scoring
-"""
-
+# handler.py  (create: 25 steps + cfg 7 + random seed + score; production: 50 steps + cfg 7 + seed required + NO score)
 from __future__ import annotations
 
 import base64
@@ -61,7 +45,6 @@ def load_pipe() -> None:
         variant="fp16",
         local_files_only=LOCAL_FILES_ONLY,
     ).to("cuda")
-
     pipe.scheduler = EDMDPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
     _log("[init] Playground ready")
 
@@ -77,7 +60,6 @@ def load_aesthetics() -> None:
         trust_remote_code=True,
         local_files_only=LOCAL_FILES_ONLY,
     ).to("cuda")
-
     aesthetic_processor = AutoProcessor.from_pretrained(
         AESTHETICS_REPO,
         trust_remote_code=True,
@@ -95,7 +77,6 @@ def _img_to_b64_jpeg(img: Image.Image, quality: int = 95) -> str:
 def _calc_score(img: Image.Image) -> float:
     assert aesthetic_model is not None and aesthetic_processor is not None
     inputs = aesthetic_processor(images=img, return_tensors="pt").to("cuda")
-
     with torch.inference_mode():
         outputs = aesthetic_model(**inputs)
 

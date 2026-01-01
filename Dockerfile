@@ -5,9 +5,6 @@ WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    HF_HOME=/runpod-volume/huggingface \
-    TRANSFORMERS_CACHE=/runpod-volume/huggingface/transformers \
-    HF_DATASETS_CACHE=/runpod-volume/huggingface/datasets \
     HF_HUB_DISABLE_TELEMETRY=1
 
 COPY requirements.txt .

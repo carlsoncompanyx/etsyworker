@@ -1,4 +1,4 @@
-# /app/handler.py
+# handler.py
 from __future__ import annotations
 
 import base64
@@ -8,39 +8,47 @@ import sys
 import traceback
 from typing import Any, Dict, Optional
 
-# ---- cache path: use /runpod-volume if mounted+writable, else /tmp ----
-def _pick_cache_root() -> str:
-    preferred = "/runpod-volume"
-    try:
-        if os.path.isdir(preferred):
-            test_dir = os.path.join(preferred, "huggingface")
-            os.makedirs(test_dir, exist_ok=True)
-            test_file = os.path.join(test_dir, ".write_test")
-            with open(test_file, "w") as f:
-                f.write("ok")
-            os.remove(test_file)
-            return preferred
-    except Exception:
-        pass
 
-    fallback = "/tmp"
-    os.makedirs(os.path.join(fallback, "huggingface"), exist_ok=True)
+def _is_writable_dir(path: str) -> bool:
+    try:
+        os.makedirs(path, exist_ok=True)
+        test_file = os.path.join(path, ".write_test")
+        with open(test_file, "w", encoding="utf-8") as f:
+            f.write("ok")
+        os.remove(test_file)
+        return True
+    except Exception:
+        return False
+
+
+def _resolve_cache_root() -> str:
+    preferred = "/runpod-volume/huggingface"
+    fallback = "/tmp/huggingface"
+
+    if os.path.isdir("/runpod-volume") and _is_writable_dir(preferred):
+        return preferred
+
+    _is_writable_dir(fallback)
     return fallback
 
 
-CACHE_ROOT = _pick_cache_root()
-HF_HOME = os.path.join(CACHE_ROOT, "huggingface")
+CACHE_ROOT = _resolve_cache_root()
 
-os.environ.setdefault("HF_HOME", HF_HOME)
-os.environ.setdefault("TRANSFORMERS_CACHE", os.path.join(HF_HOME, "transformers"))
-os.environ.setdefault("HF_DATASETS_CACHE", os.path.join(HF_HOME, "datasets"))
-os.environ.setdefault("PYTHONUNBUFFERED", "1")
+# IMPORTANT: override (NOT setdefault) so Dockerfile/env can't pin us to a bad path
+os.environ["HF_HOME"] = CACHE_ROOT
+os.environ["TRANSFORMERS_CACHE"] = os.path.join(CACHE_ROOT, "transformers")
+os.environ["HF_DATASETS_CACHE"] = os.path.join(CACHE_ROOT, "datasets")
+os.environ["HF_HUB_CACHE"] = os.path.join(CACHE_ROOT, "hub")
+os.environ["DIFFUSERS_CACHE"] = os.path.join(CACHE_ROOT, "diffusers")
 
-import runpod
-import torch
-from PIL import Image
-from diffusers import DiffusionPipeline, EDMDPMSolverMultistepScheduler
-from transformers import AutoModel, AutoProcessor
+print(f"[boot] python={sys.version.split()[0]} cache_root={CACHE_ROOT}", flush=True)
+
+import runpod  # noqa: E402
+import torch  # noqa: E402
+from PIL import Image  # noqa: E402
+from diffusers import DiffusionPipeline, EDMDPMSolverMultistepScheduler  # noqa: E402
+from transformers import AutoModel, AutoProcessor  # noqa: E402
+
 
 PLAYGROUND_REPO = "playgroundai/playground-v2.5-1024px-aesthetic"
 AESTHETICS_REPO = "discus0434/aesthetic-predictor-v2-5"
@@ -55,8 +63,7 @@ aesthetic_processor: Optional[Any] = None
 
 
 def _log(msg: str) -> None:
-    print(msg)
-    sys.stdout.flush()
+    print(msg, flush=True)
 
 
 def _img_to_b64_jpeg(img: Image.Image, quality: int = 95) -> str:
@@ -70,15 +77,15 @@ def load_pipe() -> None:
     if pipe is not None:
         return
 
-    _log(f"[init] HF_HOME={os.environ.get('HF_HOME')}")
-    _log("[init] Loading Playground v2.5 pipeline...")
+    _log("[init] loading diffusion pipeline...")
     pipe = DiffusionPipeline.from_pretrained(
         PLAYGROUND_REPO,
         torch_dtype=torch.float16,
         variant="fp16",
+        cache_dir=CACHE_ROOT,
     ).to("cuda")
     pipe.scheduler = EDMDPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
-    _log("[init] Playground ready.")
+    _log("[init] pipeline ready")
 
 
 def load_aesthetics() -> None:
@@ -86,25 +93,26 @@ def load_aesthetics() -> None:
     if aesthetic_model is not None and aesthetic_processor is not None:
         return
 
-    _log("[init] Loading aesthetic predictor...")
+    _log("[init] loading aesthetic predictor...")
     aesthetic_model = AutoModel.from_pretrained(
         AESTHETICS_REPO,
         trust_remote_code=True,
+        cache_dir=CACHE_ROOT,
     ).to("cuda")
     aesthetic_processor = AutoProcessor.from_pretrained(
         AESTHETICS_REPO,
         trust_remote_code=True,
+        cache_dir=CACHE_ROOT,
     )
-    _log("[init] Aesthetic predictor ready.")
+    _log("[init] aesthetic predictor ready")
 
 
-def calc_score(img: Image.Image) -> float:
+def _calc_score(img: Image.Image) -> float:
     assert aesthetic_model is not None and aesthetic_processor is not None
     inputs = aesthetic_processor(images=img, return_tensors="pt").to("cuda")
     with torch.inference_mode():
         outputs = aesthetic_model(**inputs)
-    score = float(outputs.logits.reshape(-1)[0].item())
-    return round(score, 2)
+    return round(float(outputs.logits.reshape(-1)[0].item()), 2)
 
 
 def route_create(inp: Dict[str, Any]) -> Dict[str, Any]:
@@ -133,9 +141,10 @@ def route_create(inp: Dict[str, Any]) -> Dict[str, Any]:
             generator=gen,
         ).images[0]
 
-    score = calc_score(img)
+    score = _calc_score(img)
 
     return {
+        "route": "create",
         "image": _img_to_b64_jpeg(img),
         "aesthetic_score": score,
         "metadata": {
@@ -177,6 +186,7 @@ def route_production(inp: Dict[str, Any]) -> Dict[str, Any]:
         ).images[0]
 
     return {
+        "route": "production",
         "image": _img_to_b64_jpeg(img),
         "metadata": {
             "seed": seed,
@@ -190,16 +200,16 @@ def route_production(inp: Dict[str, Any]) -> Dict[str, Any]:
 
 def handler(job: Dict[str, Any]) -> Dict[str, Any]:
     try:
-        if job.get("input") == "health":
+        inp = job.get("input")
+        if inp == "health":
             return {
                 "status": "healthy",
-                "pipe_loaded": pipe is not None,
-                "aesthetics_loaded": aesthetic_model is not None,
                 "gpu_available": torch.cuda.is_available(),
-                "hf_home": os.environ.get("HF_HOME"),
+                "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A",
+                "cache_root": CACHE_ROOT,
             }
 
-        inp = job["input"]
+        assert isinstance(inp, dict)
         route = str(inp.get("route", "")).lower()
 
         if route == "create":
@@ -215,5 +225,6 @@ def handler(job: Dict[str, Any]) -> Dict[str, Any]:
         return {"error": str(e), "traceback": traceback.format_exc()}
 
 
-_log("[boot] starting runpod serverless loop...")
-runpod.serverless.start({"handler": handler})
+if __name__ == "__main__":
+    _log("[boot] starting runpod serverless loop...")
+    runpod.serverless.start({"handler": handler})

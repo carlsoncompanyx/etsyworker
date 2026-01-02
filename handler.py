@@ -18,12 +18,11 @@ if not hasattr(huggingface_hub, "cached_download"):
 
     huggingface_hub.cached_download = _cached_download
 
-try:
-    from diffusers import StableDiffusionXLPipeline, EDMDPMSolverMultistepScheduler
-    SchedulerCls = EDMDPMSolverMultistepScheduler
-except ImportError:
-    from diffusers import StableDiffusionXLPipeline, DPMSolverMultistepScheduler
-    SchedulerCls = DPMSolverMultistepScheduler
+import diffusers
+from diffusers import StableDiffusionXLPipeline, DPMSolverMultistepScheduler
+
+# Import scheduler via attribute lookup to avoid hard import errors in older diffusers
+SchedulerCls = getattr(diffusers, "EDMDPMSolverMultistepScheduler", DPMSolverMultistepScheduler)
 from transformers import AutoModel, AutoProcessor
 
 # Add GitHub repo to path

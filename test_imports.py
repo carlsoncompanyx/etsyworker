@@ -16,6 +16,8 @@ if not hasattr(huggingface_hub, "cached_download"):
 
     huggingface_hub.cached_download = _cached_download
 
+import diffusers
+
 print("Python version:", sys.version)
 print("\nTesting imports...")
 print("=" * 60)
@@ -80,13 +82,9 @@ print("\nTesting specific classes...")
 print("=" * 60)
 
 try:
-    try:
-        from diffusers import DiffusionPipeline, EDMDPMSolverMultistepScheduler, EDMEulerScheduler
-        print("✓ DiffusionPipeline and schedulers (EDM)")
-    except ImportError:
-        from diffusers import DiffusionPipeline, DPMSolverMultistepScheduler
-        EDMDPMSolverMultistepScheduler = DPMSolverMultistepScheduler
-        print("✓ DiffusionPipeline and schedulers (DPM fallback)")
+    from diffusers import DiffusionPipeline, DPMSolverMultistepScheduler
+    EDMDPMSolverMultistepScheduler = getattr(diffusers, "EDMDPMSolverMultistepScheduler", DPMSolverMultistepScheduler)
+    print("✓ DiffusionPipeline and schedulers (EDM fallback-safe)")
 except Exception as e:
     print(f"✗ DiffusionPipeline: {e}")
     sys.exit(1)

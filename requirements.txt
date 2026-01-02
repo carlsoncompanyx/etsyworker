@@ -1,9 +1,8 @@
 runpod==1.6.2
-torch>=2.2.0
-diffusers>=0.27.0
-transformers>=4.36.2
-accelerate>=0.25.0
-safetensors>=0.4.1
+diffusers==0.28.0
+transformers==4.40.0
+accelerate==0.28.0
+safetensors==0.4.3
 omegaconf
 Pillow
-huggingface-hub>=0.22.0,<0.37
+huggingface-hub==0.23.0

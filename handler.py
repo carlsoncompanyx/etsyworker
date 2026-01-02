@@ -103,18 +103,19 @@ print("ALL IMPORTS SUCCESSFUL")
 print("="*60)
 
 # Add GitHub repo to path
-sys.path.append('/workspace/aesthetic-predictor-v2-5')
+AESTHETIC_REPO_PATH = os.getenv("AESTHETIC_REPO_PATH", "/workspace/aesthetic-predictor-v2-5")
+sys.path.append(AESTHETIC_REPO_PATH)
 
-# Paths verified on your volume
-MODEL_PATH = "/workspace/playground-v2.5-1024px-aesthetic.fp16.safetensors"
-SIGLIP_PATH = "/workspace/siglip"
-PREDICTOR_WEIGHTS = "/workspace/aesthetic-predictor-v2-5/aesthetic-predictor.pth"
+# Paths verified on your volume (override with env vars when needed)
+MODEL_PATH = os.getenv("MODEL_PATH", "/workspace/playground-v2.5-1024px-aesthetic.fp16.safetensors")
+SIGLIP_PATH = os.getenv("SIGLIP_PATH", "/workspace/siglip")
+PREDICTOR_WEIGHTS = os.getenv("PREDICTOR_WEIGHTS", os.path.join(AESTHETIC_REPO_PATH, "aesthetic-predictor.pth"))
 
 print("\nChecking file paths...")
 print(f"MODEL_PATH exists: {os.path.exists(MODEL_PATH)}")
 print(f"SIGLIP_PATH exists: {os.path.exists(SIGLIP_PATH)}")
 print(f"PREDICTOR_WEIGHTS exists: {os.path.exists(PREDICTOR_WEIGHTS)}")
-print(f"aesthetic-predictor-v2-5 dir exists: {os.path.exists('/workspace/aesthetic-predictor-v2-5')}")
+print(f"aesthetic-predictor-v2-5 dir exists: {os.path.exists(AESTHETIC_REPO_PATH)}")
 
 pipe = None
 aesthetic_model = None
@@ -122,9 +123,19 @@ aesthetic_processor = None
 
 def load_models():
     global pipe, aesthetic_model, aesthetic_processor
+
+    def _require_path(path, description, is_dir=False):
+        exists = os.path.isdir(path) if is_dir else os.path.isfile(path)
+        if not exists:
+            raise FileNotFoundError(
+                f"{description} not found at {path}. "
+                "Ensure the RunPod volume is mounted at /workspace with the required assets."
+            )
+        return exists
     
     if pipe is None:
         print(f"\nLoading Playground from {MODEL_PATH}")
+        _require_path(MODEL_PATH, "Playground checkpoint")
         try:
             # Load the pipeline
             pipe = StableDiffusionXLPipeline.from_single_file(
@@ -149,6 +160,8 @@ def load_models():
 
     if aesthetic_model is None:
         print(f"\nLoading Predictor from {SIGLIP_PATH}")
+        _require_path(SIGLIP_PATH, "SigLIP model directory", is_dir=True)
+        _require_path(PREDICTOR_WEIGHTS, "Aesthetic predictor weights")
         try:
             from aesthetic_predictor_v2_5 import AestheticPredictorV2_5
             

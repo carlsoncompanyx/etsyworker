@@ -21,4 +21,7 @@ RUN pip install -r requirements.txt
 # Copy handler code
 COPY handler.py .
 
+# Add a simple health check that prints versions
+RUN python -c "import sys; print(f'Python: {sys.version}'); import torch; print(f'PyTorch: {torch.__version__}'); import diffusers; print(f'Diffusers: {diffusers.__version__}')"
+
 CMD ["python", "-u", "handler.py"]

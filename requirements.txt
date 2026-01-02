@@ -1,9 +1,8 @@
-# requirements.txt
 runpod==1.6.2
 diffusers>=0.27.0
 transformers>=4.38.0
 accelerate>=0.27.0
 safetensors>=0.4.2
-huggingface-hub>=0.20.3
 Pillow>=10.2.0
 numpy==1.24.3
+omegaconf

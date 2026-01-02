@@ -1,8 +1,7 @@
 runpod==1.6.2
-diffusers>=0.27.0
-transformers>=4.38.0
-accelerate>=0.27.0
-safetensors>=0.4.2
-Pillow>=10.2.0
-numpy==1.24.3
+diffusers==0.25.0
+transformers==4.36.2
+accelerate==0.25.0
+safetensors==0.4.1
 omegaconf
+Pillow

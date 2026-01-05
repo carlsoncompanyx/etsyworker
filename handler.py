@@ -3,6 +3,7 @@ import sys
 import base64
 import io
 import traceback
+import time
 
 # Print Python and system info immediately
 print("="*60)
@@ -103,18 +104,24 @@ print("ALL IMPORTS SUCCESSFUL")
 print("="*60)
 
 # Add GitHub repo to path
-sys.path.append('/workspace/aesthetic-predictor-v2-5')
+AESTHETIC_REPO_PATH = os.getenv("AESTHETIC_REPO_PATH", "/workspace/aesthetic-predictor-v2-5")
+sys.path.append(AESTHETIC_REPO_PATH)
 
-# Paths verified on your volume
-MODEL_PATH = "/workspace/playground-v2.5-1024px-aesthetic.fp16.safetensors"
-SIGLIP_PATH = "/workspace/siglip"
-PREDICTOR_WEIGHTS = "/workspace/aesthetic-predictor-v2-5/aesthetic-predictor.pth"
+# Paths verified on your volume (override with env vars when needed)
+MODEL_PATH = os.getenv("MODEL_PATH", "/workspace/playground-v2.5-1024px-aesthetic.fp16.safetensors")
+SIGLIP_PATH = os.getenv("SIGLIP_PATH", "/workspace/siglip")
+SIGLIP_MODEL_FILE = os.getenv("SIGLIP_MODEL_FILE", "model.safetensors")
+PREDICTOR_WEIGHTS = os.getenv(
+    "PREDICTOR_WEIGHTS",
+    os.path.join(AESTHETIC_REPO_PATH, "models", "aesthetic_predictor_v2_5.pth")
+)
+WAIT_FOR_ASSETS_SECONDS = int(os.getenv("WAIT_FOR_ASSETS_SECONDS", "90"))
 
 print("\nChecking file paths...")
 print(f"MODEL_PATH exists: {os.path.exists(MODEL_PATH)}")
 print(f"SIGLIP_PATH exists: {os.path.exists(SIGLIP_PATH)}")
 print(f"PREDICTOR_WEIGHTS exists: {os.path.exists(PREDICTOR_WEIGHTS)}")
-print(f"aesthetic-predictor-v2-5 dir exists: {os.path.exists('/workspace/aesthetic-predictor-v2-5')}")
+print(f"aesthetic-predictor-v2-5 dir exists: {os.path.exists(AESTHETIC_REPO_PATH)}")
 
 pipe = None
 aesthetic_model = None
@@ -122,9 +129,44 @@ aesthetic_processor = None
 
 def load_models():
     global pipe, aesthetic_model, aesthetic_processor
+
+    def _looks_local(path: str) -> bool:
+        return path.startswith("/") or path.startswith(".") or os.path.splitdrive(path)[0] != ""
+
+    def _wait_for_path(path, is_dir=False):
+        """Give network volumes time to mount before failing."""
+        if WAIT_FOR_ASSETS_SECONDS <= 0:
+            return False
+
+        deadline = time.time() + WAIT_FOR_ASSETS_SECONDS
+        check_fn = os.path.isdir if is_dir else os.path.isfile
+        while time.time() < deadline:
+            if check_fn(path):
+                return True
+            time.sleep(1)
+        return False
+
+    def _require_path(path, description, env_var=None, is_dir=False):
+        if _looks_local(path):
+            exists = os.path.isdir(path) if is_dir else os.path.isfile(path)
+            if not exists:
+                if _wait_for_path(path, is_dir=is_dir):
+                    exists = True
+                if not exists:
+                    location_hint = (
+                        f"Set {env_var} to a valid {'directory' if is_dir else 'file'} path "
+                        f"or ensure the network volume is mounted at {path}."
+                    ) if env_var else f"Ensure the network volume provides the asset at {path}."
+                raise FileNotFoundError(
+                    f"{description} not found at {path}. {location_hint}"
+                )
+        else:
+            print(f"{description} appears remote ({path}); skipping local existence check.")
+        return True
     
     if pipe is None:
         print(f"\nLoading Playground from {MODEL_PATH}")
+        _require_path(MODEL_PATH, "Playground checkpoint", env_var="MODEL_PATH")
         try:
             # Load the pipeline
             pipe = StableDiffusionXLPipeline.from_single_file(
@@ -149,6 +191,8 @@ def load_models():
 
     if aesthetic_model is None:
         print(f"\nLoading Predictor from {SIGLIP_PATH}")
+        _require_path(SIGLIP_PATH, "SigLIP model directory", env_var="SIGLIP_PATH", is_dir=True)
+        _require_path(PREDICTOR_WEIGHTS, "Aesthetic predictor weights", env_var="PREDICTOR_WEIGHTS")
         try:
             from aesthetic_predictor_v2_5 import AestheticPredictorV2_5
             

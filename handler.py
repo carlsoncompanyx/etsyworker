@@ -243,12 +243,33 @@ print(f"AESTHETIC_REPO_PATH isdir: {os.path.isdir(AESTHETIC_REPO_PATH)}  -> {AES
 # This subclass accepts & ignores it to prevent crashes.
 # ============================================================
 class PatchedStableDiffusionXLPipeline(StableDiffusionXLPipeline):
-    def __init__(self, *args, safety_checker=None, feature_extractor=None, **kwargs):
-        super().__init__(*args, **kwargs)
-
-pipe = None
-aesthetic_model = None
-aesthetic_processor = None
+    def __init__(
+        self,
+        vae,
+        text_encoder,
+        text_encoder_2,
+        tokenizer,
+        tokenizer_2,
+        unet,
+        scheduler,
+        image_encoder=None,
+        feature_extractor=None,
+        safety_checker=None,
+        requires_safety_checker=True,
+        **kwargs
+    ):
+        # Ignore safety_checker and feature_extractor, pass only what parent expects
+        super().__init__(
+            vae=vae,
+            text_encoder=text_encoder,
+            text_encoder_2=text_encoder_2,
+            tokenizer=tokenizer,
+            tokenizer_2=tokenizer_2,
+            unet=unet,
+            scheduler=scheduler,
+            image_encoder=image_encoder,
+            requires_safety_checker=False,  # Disable safety checker requirement
+        )
 
 # ============================================================
 # MODEL LOADING

@@ -272,6 +272,13 @@ class PatchedStableDiffusionXLPipeline(StableDiffusionXLPipeline):
         )
 
 # ============================================================
+# GLOBAL MODEL VARIABLES (initialize first)
+# ============================================================
+pipe = None
+aesthetic_model = None
+aesthetic_processor = None
+
+# ============================================================
 # MODEL LOADING
 # ============================================================
 def load_models():
